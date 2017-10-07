@@ -1,12 +1,65 @@
-FROM ubuntu:16.04
+# Freebind Docker Container
+*** WORK IN PROGRESS ***
+I created this container because I ran into some issues trying to compile/install freebind on production servers.
+1) Setup Linux AnyIP on host (kernel version 3.19 or higher required):
+```
+ip -6 route add local 2a00:1450:4001:81b::/64 dev lo
+```
+2) Build your  this container Run this container with --network=host
 
-RUN apt-get update &&  apt-get install curl htop make gcc libnetfilter-queue-dev git net-tools wget
 
-RUN mkdir /home/freebind-source
-RUN git clone https://github.com/blechschmidt/freebind.git /home/freebind-source/.
-RUN cd /home/freebind-source &&  make install
+Here's a copy of blechschmidt's README.
+GitHub: https://github.com/blechschmidt/freebind
 
-#ip -6 route add local 2001:470:b326::/48 dev lo
 
-# TEST
-#freebind -r 2001:470:b326::/48 wget -qO- ipv6.wtfismyip.com/text
+# Freebind
+Make use of any IP address from a prefix that is routed to your machine.
+
+With the introduction of IPv6 single machines often get prefixes with more than one IP address assigned. However, without AnyIP and socket freebinding, many applications lack support to dynamically bind to arbitrary unconfigured addresses within these prefixes. Freebind enables the [IP\_FREEBIND](http://man7.org/linux/man-pages/man7/ip.7.html) socket option by hooking into `socket` library calls using `LD_PRELOAD`.
+
+IPv6 services employing rate limiting often ban per /128 or per /64 in order to minimize collateral damage. If you have a statically routed prefix that is smaller than the prefix being banned, you can make use of freebind, which will bind sockets to random IP addresses from specified prefixes.
+
+## Usage
+### Installing
+Clone and `cd` into the git repository, then run `make install`. In order for `packetrand` to be built successfully, `libnetfilter-queue-dev` is required.
+### Setup
+Assume your ISP has assigned the subnet `2a00:1450:4001:81b::/64` to your server. In order to make use of freebinding, you first need to configure the [Linux AnyIP kernel feature](https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=ab79ad14a2d51e95f0ac3cef7cd116a57089ba82) in order to be able to bind a socket to an arbitrary IP address from this subnet as follows:
+
+```
+ip -6 route add local 2a00:1450:4001:81b::/64 dev lo
+```
+
+### Example
+Having set up AnyIP, the following command will bind wget's internal socket to a random address from the specified subnet:
+```
+freebind -r 2a00:1450:4001:81b::/64 wget -qO- ipv6.wtfismyip.com/text
+```
+In practice, running this command multiple times will yield a new IP address every time.
+
+### UDP per packet randomization
+The `freebind` program is only suitable for assigning one IP address per socket. It will not assign a random IP address per packet. Therefore, `packetrand` making use of the netfilter API is included for use in scenarios that require a fresh IP address per outgoing packet.
+
+#### Setup
+Imagine you want to randomize source addresses for DNS resolving. The following command has `iptables` pass outgoing DNS packets to the `packetrand` userspace program:
+```
+ip6tables -I OUTPUT -j NFQUEUE -p udp --dport 53 --queue-num 0 --queue-bypass
+ip6tables -I INPUT -j NFQUEUE -p udp --sport 53 --queue-num 0 --queue-bypass
+```
+Afterwards, the `packetrand` daemon could be invoked as follows, where 0 is the netfilter queue number:
+```
+packetrand 0 2a00:1450:4001:81b:: 2a00:1450:4001:81b::/64
+```
+This will cause `packetrand` to rewrite the source address of outgoing packets to a random address from the specified prefix and translate back the destination address of incoming packets to `2a00:1450:4001:81b::` which is supposed to be the address which the socket is bound to.
+
+#### Source port randomization
+You can use the `-r` switch in order to randomize source ports per packet.
+```
+packetrand 0 -r 53
+```
+In this case, all outgoing UDP packets that are handled by the queue have their source port randomized and 53 is the port number for incoming packets to be rewritten to.
+
+#### Limitations
+- IPv6 extension headers are not yet supported
+
+### Notes
+The application will only work if your internet service provider provides you with a routed prefix.
